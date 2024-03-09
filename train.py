@@ -1,13 +1,14 @@
 """
 Author: Luka Secilmis
 
-Description: Implements Conditional Variance Regularization (CoRe) on the MNIST dataset,
- following Section 5.5 of Heinze-Deml and N. Meinshausen's work on Conditional Variance Penalties and Domain Shift Robustness (https://arxiv.org/abs/1710.11469).
+Description:
+    Implements Conditional Variance Regularization (CoRe) on augmented MNIST dataset.
 
-References: MNIST classification example (https://github.com/google/flax)
+References:
+    Reproduces experiment in section 5.5 of https://arxiv.org/abs/1710.11469 (C.Heinze-Deml and N. Meinshausen, 2017)
+    Model architecture and hyperparameters adapted from https://github.com/christinaheinze/core/tree/master
+    Adapted MNIST classification example from https://github.com/google/flax
 """
-from typing import Sequence
-
 from absl import logging
 from flax import linen as nn
 from flax.metrics import tensorboard
