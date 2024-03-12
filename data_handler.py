@@ -69,3 +69,9 @@ def load_datasets_mnist(train_size, aug_size):
     test_ds_mod = {'image': test_mnist(test_ds['image']), 'label': test_ds['label']}
 
     return train_ds_aug, test_ds_mod, test_ds
+
+def load_datasets(dataset, train_size, aug_size):
+    if dataset == 'mnist':
+        return load_datasets_mnist(train_size, aug_size)
+    else: 
+        raise ValueError('Dataset not supported yet.')
