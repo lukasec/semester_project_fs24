@@ -8,6 +8,8 @@ import tensorflow_datasets as tfds
 import numpy as np
 import scipy.ndimage
 import jax.numpy as jnp
+SEED = 42
+np.random.seed(SEED)
 
 
 def load_original_mnist():
