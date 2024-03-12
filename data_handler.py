@@ -44,7 +44,7 @@ def train_mnist(images, labels, c):
     labels_aug = np.concatenate((labels_aug, [labels[i] for i in indices]), axis=0)
     ids_aug = np.concatenate((ids_aug, indices), axis=0)
     
-    return {'image': images_aug, 'label': labels_aug, 'id': ids_aug}
+    return {'image': jnp.array(images_aug), 'label': jnp.array(labels_aug), 'id': jnp.array(ids_aug)}
 
 
 def test_mnist(images):
@@ -63,12 +63,16 @@ def load_datasets_mnist(train_size, aug_size):
     """Generate three datasets: augmented training set, test set with only rotated images, and original mnist test data."""
     train_ds, test_ds = load_original_mnist()
 
-    # Generate augmented training set
+    # Subsample training set, and augment it
     indices = np.random.choice(train_ds['image'].shape[0], size=train_size, replace=False)
-    train_ds = {'image': train_ds['image'][indices], 'label': train_ds['label'][indices],}
-
+    train_ds = {'image': jnp.array(train_ds['image'][indices]), 'label': jnp.array(train_ds['label'][indices])}
     train_ds_aug = train_mnist(train_ds['image'], train_ds['label'], aug_size)
-    test_ds_mod = {'image': test_mnist(test_ds['image']), 'label': test_ds['label']}
+
+    # Test set with all images rotated
+    test_ds_mod = {'image': jnp.array(test_mnist(test_ds['image'])), 'label': jnp.array(test_ds['label'])}
+
+    # Original test set
+    test_ds = {'image': jnp.array(test_ds['image']), 'label': jnp.array(test_ds['label'])}
 
     return train_ds_aug, test_ds_mod, test_ds
 
