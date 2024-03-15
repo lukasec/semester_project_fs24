@@ -4,6 +4,7 @@ import ml_collections
 def mnist_experiment():
     config = ml_collections.ConfigDict()
     config.learning_rate = 0.01
+    config.decay_rate = 0.9999
     config.batch_size = 120
     config.num_epochs = 25
     config.lambda_l2 = 0.001  # L2 regularization strength
