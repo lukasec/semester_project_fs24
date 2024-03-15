@@ -19,6 +19,7 @@ import ml_collections
 import numpy as np
 import optax
 import data_handler
+logging.set_verbosity(logging.INFO)
 SEED = 42
 
 class CNN(nn.Module):
@@ -34,55 +35,53 @@ class CNN(nn.Module):
         return x
 
 
-def get_config():
-    """Hyperparameter configuration."""
-    config = ml_collections.ConfigDict()
-    config.learning_rate = 0.01
-    config.batch_size = 120
-    config.num_epochs = 25
-    config.lambda_l2 = 0.001  # L2 regularization strength
-    config.lambda_core = 0.2  # Conditional variance regularization strength
-    config.train_size = 10000  # Size of training set
-    config.aug_size = 200  # Number of augmented images
-    return config
-
-
-@jax.jit
+# @jax.jit
 def apply_model(state, images, labels, ids, lambda_l2, lambda_core):
     """Computes gradients, loss and accuracy for a single batch."""
-    def core_penalty(ids, logits, lambda_core):
-        unique_ids = jnp.unique(ids)
+    def core_penalty(params, logits, ids):
+        _, index_inverse, counts = jnp.unique(ids, return_inverse=True, return_counts=True)  # ids = unique_ids[index_inverse]
+        
+        mask = counts[index_inverse] > 1
+        
+        penalty = 0.0
+        
+        if jnp.any(mask):
+            # IDs with more than one occurence
+            filtered_logits = logits[mask] 
+            
+            # Mean logits per ID
+            sum_perID = jax.ops.segment_sum(filtered_logits, index_inverse[mask], num_segments=jnp.max(index_inverse) + 1)
+            count_perID = jax.ops.segment_sum(jnp.ones_like(filtered_logits[:, 0]), index_inverse[mask], num_segments=jnp.max(index_inverse) + 1)
+            mean_perID = sum_perID / count_perID[:, None]
+            
+            # Squared differences between logits and their mean
+            square_diff = (filtered_logits - mean_perID[index_inverse[mask]])**2
+            
+            # Variance per ID
+            sum_squares_perID = jax.ops.segment_sum(square_diff, index_inverse[mask], num_segments=jnp.max(index_inverse) + 1)
+            variance_perID = sum_squares_perID / count_perID[:, None]
+            
+            # Mean of the variances per ID
+            penalty = jnp.mean(variance_perID[count_perID > 1])
+        return penalty
 
-        def mean_prediction_for_id(id):
-            mask = ids == id  # indices of samples grouped by id
-            return jnp.mean(logits[mask], axis=0)
-        
-        group_means = jax.vmap(mean_prediction_for_id)(unique_ids)
-        
-        def variance_for_id(id, group_mean):
-            mask = ids == id
-            group_logits = logits[mask]
-            return jnp.mean(jnp.square(group_logits - group_mean)) if group_logits.shape[0] > 1 else 0
-        
-        group_variances = jax.vmap(variance_for_id, in_axes=(0, 0))(unique_ids, group_means)
-        
-        return lambda_core * jnp.mean(group_variances)
-
-    def l2_penalty(params, lambda_l2):
-        return lambda_l2 * sum(jnp.sum(jnp.square(param)) for param in jax.tree_util.tree_leaves(params))
+    def l2_penalty(params):
+        return sum(jnp.sum(jnp.square(param)) for param in jax.tree_util.tree_leaves(params))
 
     def loss_fn(params):
         logits = state.apply_fn({'params': params}, images)  # forward pass
         one_hot = jax.nn.one_hot(labels, 10)
         loss = jnp.mean(optax.softmax_cross_entropy(logits=logits, labels=one_hot))
-        loss += l2_penalty(params, lambda_l2)
-        if ids is not None and lambda_core > 0: loss += core_penalty(ids, logits, lambda_core)
-        return loss, logits
+        l2_pen = l2_penalty(params)
+        loss += lambda_l2 * l2_pen
+        core_pen = core_penalty(params, logits, ids)
+        loss += lambda_core * core_pen
+        return loss, (logits, core_pen)
 
-    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)  # auxiliary data = logits
-    (loss, logits), grads = grad_fn(state.params)
+    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)  # auxiliary data
+    (loss, (logits, core_pen)), grads = grad_fn(state.params)
     accuracy = jnp.mean(jnp.argmax(logits, -1) == labels)
-    return grads, loss, accuracy
+    return grads, loss, accuracy, core_pen
 
 
 @jax.jit
@@ -102,19 +101,22 @@ def train_epoch(state, train_ds, config, rng):
 
     epoch_loss = []
     epoch_accuracy = []
+    core_penalties= []
 
     for perm in perms:
         batch_images = train_ds['image'][perm, ...]
         batch_labels = train_ds['label'][perm, ...]
         batch_ids = train_ds['id'][perm, ...]
-        grads, loss, accuracy = apply_model(state, batch_images, batch_labels, batch_ids, config.lambda_l2, config.lambda_core)
+        grads, loss, accuracy, core_pen = apply_model(state, batch_images, batch_labels, batch_ids, config.lambda_l2, config.lambda_core)
         state = update_model(state, grads)
         epoch_loss.append(loss)
         epoch_accuracy.append(accuracy)
+        core_penalties.append(core_pen)
 
     train_loss = np.mean(epoch_loss)
     train_accuracy = np.mean(epoch_accuracy)
-    return state, train_loss, train_accuracy
+    core_penalty= np.mean(core_penalties)
+    return state, train_loss, train_accuracy, core_penalty
 
 
 def create_train_state(rng, learning_rate):
@@ -125,9 +127,7 @@ def create_train_state(rng, learning_rate):
     return train_state.TrainState.create(apply_fn=cnn.apply, params=params, tx=tx)
 
 
-def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> train_state.TrainState:
-    """Trains the model on the augmented MNIST dataset and evaluates it."""
-    train_ds, test1_ds, test2_ds = data_handler.load_datasets("mnist", config.train_size, config.aug_size)
+def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds: dict, test1_ds: dict, test2_ds: dict) -> train_state.TrainState:
     rng = jax.random.key(SEED)
 
     summary_writer = tensorboard.SummaryWriter(workdir)
@@ -138,23 +138,17 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> train
 
     for epoch in range(1, config.num_epochs + 1):
         rng, input_rng = jax.random.split(rng)
-        state, train_loss, train_accuracy = train_epoch(state, train_ds, input_rng, config)
-        _, test1_loss, test1_accuracy = apply_model(state, test1_ds['image'], test1_ds['label'], None, config.lambda_l2, config.lambda_core)
-        _, test2_loss, test2_accuracy = apply_model(state, test2_ds['image'], test2_ds['label'], None, config.lambda_l2, config.lambda_core)
+        state, train_loss, train_accuracy, core_penalty = train_epoch(state, train_ds, config, input_rng)
+        _, test1_loss, test1_accuracy, _ = apply_model(state, test1_ds['image'], test1_ds['label'], jnp.arange(len(test1_ds['image'])), config.lambda_l2, config.lambda_core)
+        _, test2_loss, test2_accuracy, _ = apply_model(state, test2_ds['image'], test2_ds['label'], jnp.arange(len(test2_ds['image'])), config.lambda_l2, config.lambda_core)
 
         logging.info(
-            'epoch:% 3d, train_loss: %.4f, train_accuracy: %.2f, test1_loss: %.4f,'
-            ' test1_accuracy: %.2f', 'test2_loss: %.4f, test2_accuracy: %.2f'
-            % (
-                epoch,
-                train_loss,
-                train_accuracy * 100,
-                test1_loss,
-                test1_accuracy * 100,
-                test2_loss,
-                test2_accuracy * 100
-            )
+            f'epoch: {epoch}, train_loss: {train_loss:.4f}, train_accuracy: {train_accuracy * 100:.2f}, '
+            f'test1_loss: {test1_loss:.4f}, test1_accuracy: {test1_accuracy * 100:.2f}, '
+            f'test2_loss: {test2_loss:.4f}, test2_accuracy: {test2_accuracy * 100:.2f}'
         )
+
+        logging.info(f'epoch: {epoch}, core_penalty: {core_penalty:.4f}')
 
         summary_writer.scalar('train_loss', train_loss, epoch)
         summary_writer.scalar('train_accuracy', train_accuracy, epoch)
@@ -162,6 +156,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str) -> train
         summary_writer.scalar('test_accuracy', test1_accuracy, epoch)
         summary_writer.scalar('test_loss', test2_loss, epoch)
         summary_writer.scalar('test_accuracy', test2_accuracy, epoch)
+        summary_writer.scalar('core_value', core_penalty, epoch)
+
 
     summary_writer.flush()
     return state
