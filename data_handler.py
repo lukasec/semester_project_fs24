@@ -4,15 +4,20 @@ Author: Luka Secilmis
 Description:
     Augments datasets with random simulated domain shifts.
 """
+import os
 import tensorflow_datasets as tfds
 import numpy as np
 import scipy.ndimage
 import matplotlib.pyplot as plt
 import jax.numpy as jnp
+import pandas as pd
+from skimage.transform import resize
+from skimage.io import imread
 SEED = 7
 np.random.seed(SEED)
 
 
+########################### Experiment 5.5 MNIST with rotations ###########################
 def load_original_mnist():
     """Load the original MNIST dataset."""
     ds_builder = tfds.builder('mnist')
@@ -89,13 +94,6 @@ def load_datasets_mnist(train_size, aug_size, bidirec):
     return train_ds_aug, test_ds_mod, test_ds
     
 
-def load_datasets(dataset, train_size, aug_size, bidirec=False):
-    if dataset == 'mnist':
-        return load_datasets_mnist(train_size, aug_size, bidirec)
-    else: 
-        raise ValueError('Dataset not supported yet.')
-
-
 def show_img(img, ax=None, title=None):
   if ax is None:
     ax = plt.gca()
@@ -110,3 +108,92 @@ def show_img_grid(imgs, titles):
   _, axs = plt.subplots(n, n, figsize=(3 * n, 3 * n))
   for i, (img, title) in enumerate(zip(imgs, titles)):
     show_img(img, axs[i // n][i % n], title)
+
+
+########################### Experiment 5.2 CelebA with confounding ###########################
+def load_original_celebA():
+    celebA_path = './data/celebA'
+    if not os.path.exists(celebA_path):  # Requires manual download
+        raise FileNotFoundError('CelebA dataset not found.\nManually download from Kaggle and place in data/celebA.\nhttps://www.kaggle.com/datasets/jessicali9530/celeba-dataset?resource=download \nAlso: unzip img_align_celeba.zip in Img subfolder.\nAlso: on the second line of list_attr_celeba.txt there is a column name missing. Please add the first column to be image_id.')
+
+    identity = pd.read_csv(os.path.join(celebA_path, 'Anno/identity_CelebA.txt'), sep='\s+', header=None, names=['image_id', 'ID'])
+    attributes = pd.read_csv(os.path.join(celebA_path, 'Anno/list_attr_celeba.txt'), sep='\s+', header=1)[['image_id', 'Male', 'Eyeglasses']]
+    attributes = attributes.replace(-1, 0)
+    partition = pd.read_csv(os.path.join(celebA_path, 'Eval/list_eval_partition.txt'), sep='\s+', header=None, names=['image_id', 'partition'])
+    img_dir = os.path.join(celebA_path, 'Img/img_align_celeba')
+
+    train_ds = partition[partition['partition'] == 0].merge(identity, on='image_id').merge(attributes, on='image_id')
+    validation_ds = partition[partition['partition'] == 1].merge(identity, on='image_id').merge(attributes, on='image_id')
+    test_ds = partition[partition['partition'] == 2].merge(identity, on='image_id').merge(attributes, on='image_id')
+    return train_ds, validation_ds, test_ds, img_dir
+
+
+def load_datasets_celebA_counfound(prop_glasses, train_size, test_size):
+    """Create training and test sets with confounding as specified in section 5.2."""
+    train_ds, validation_ds, test_ds, img_dir = load_original_celebA()
+    
+    # Combine all datasets and shuffle
+    all_ds = pd.concat([train_ds, validation_ds, test_ds])
+    all_ds = all_ds.sample(frac=1, random_state=SEED).reset_index(drop=True)  # Permute dataset
+
+    # Craft subsets and sample from them
+    n = train_size // 2  # Train: half men, half women
+    m = int(n * prop_glasses)  # Train: nb of men with glasses, women without
+    t1 = test_size[0] // 2  # Test set 1: half men with glasses, half women without
+    t2 = test_size[1] // 2  # test set 2: vice versa
+    men_with_glasses = all_ds[(all_ds['Male'] == 1) & (all_ds['Eyeglasses'] == 1)].sample(n=m+t1 , random_state=SEED)
+    men_without_glasses = all_ds[(all_ds['Male'] == 1) & (all_ds['Eyeglasses'] == 0)].sample(n=n-m+t2, random_state=SEED)
+    women_with_glasses = all_ds[(all_ds['Male'] == 0) & (all_ds['Eyeglasses'] == 1)].sample(n=n-m+t2, random_state=SEED)
+    women_without_glasses = all_ds[(all_ds['Male'] == 0) & (all_ds['Eyeglasses'] == 0)].sample(n=m+t1, random_state=SEED)
+
+    # Construct datasets with confounding
+    # Training set: men mostly wearing glasses, women mostly not wearing glasses
+    train_ds = pd.concat([men_with_glasses[:m], men_without_glasses[:n-m], women_with_glasses[:n-m], women_without_glasses[:m]])
+    train_ds = train_ds.sample(frac=1, random_state=SEED).reset_index(drop=True)  
+
+    # Test set 1: men only wear glasses, women all without glasses
+    test1_ds = pd.concat([men_with_glasses[m:m+t1], women_without_glasses[m:m+t1]])
+    test1_ds = test1_ds.sample(frac=1, random_state=SEED).reset_index(drop=True)
+
+    # Test set 2: women only wear glasses, men all without glasses
+    test2_ds = pd.concat([men_without_glasses[n-m:n-m+t2], women_with_glasses[n-m:n-m+t2]])
+    test2_ds = test2_ds.sample(frac=1, random_state=SEED).reset_index(drop=True)
+    return train_ds, test1_ds, test2_ds, img_dir
+        
+
+def load_and_preprocess_image(img_path, output_shape=(64, 64)):
+    """Load an image and resize it to desired output shape."""
+    img = imread(img_path)
+    img_resized = resize(img, output_shape)
+    return img_resized
+
+
+def conv_celebA_to_jax(df, img_dir):
+    """Convert CelebA dataset to JAX format."""
+    images = []
+
+    for _, row in df.iterrows():
+        img_id = row['image_id']
+        img_path = os.path.join(img_dir, img_id)
+        img = load_and_preprocess_image(img_path, output_shape=(64, 64, 3))
+        images.append(np.array(img))
+    images = np.array(images)
+    labels = np.array(df['Male'].values)  # Ensure labels are integers
+    ids = np.array(df['ID'].values) if 'ID' in df.columns else None
+
+    if ids is not None:
+        ds = {'image': images, 'label': labels, 'id': ids}
+    else:
+        ds = {'image': images, 'label': labels}
+    # return {k: jnp.array(v) for k, v in ds.items()}
+    return ds
+
+
+########################### Main function ###########################
+def load_datasets(dataset, train_size, aug_size, bidirec=False):
+    if dataset == 'mnist':
+        return load_datasets_mnist(train_size, aug_size, bidirec)
+    elif dataset == 'celebA_confound':
+        return load_datasets_celebA_counfound()
+    else: 
+        raise ValueError('Dataset not supported yet.')
