@@ -1,0 +1,13 @@
+# Ignore all .log files
+*.log
+
+# Ignore specific directories
+node_modules/
+.DS_Store
+.idea/
+
+# Ignore specific files
+config.env
+
+# Ignore all files in data directory
+data/*
