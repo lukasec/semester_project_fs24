@@ -164,7 +164,7 @@ def load_datasets_celebA_counfound(prop_glasses, train_size, test_size):
 def load_and_preprocess_image(img_path, output_shape=(64, 64)):
     """Load an image and resize it to desired output shape."""
     img = imread(img_path)
-    img_resized = resize(img, output_shape)
+    img_resized = resize(img, output_shape, anti_aliasing=True)
     return img_resized
 
 
