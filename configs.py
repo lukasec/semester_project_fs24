@@ -30,3 +30,16 @@ def celebA_experiment():
     config.test_size = (4000, 1200) # Size of test sets
     config.prop_glasses = 0.8 # Proportion of men with and women without glasses in training set
     return config
+
+
+def synthetic_experiment():
+    config = ml_collections.ConfigDict()
+    config.model = 'synthetic'
+    config.num_classes = 2
+    config.learning_rate = 0.01
+    config.decay_rate = 0.9999
+    config.batch_size = 120
+    config.num_epochs = 30
+    config.lambda_l2 = 0.001  # L2 regularization strength
+    config.lambda_core = 1.0  # Conditional variance regularization strength
+    return config

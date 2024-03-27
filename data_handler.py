@@ -3,9 +3,12 @@ Author: Luka Secilmis
 
 Description:
     Augments datasets with random simulated domain shifts.
+
+Note: Code for example 2 is taken completely from https://github.com/christinaheinze/core/tree/master
 """
 import os
 import tensorflow_datasets as tfds
+import tensorflow as tf
 import numpy as np
 import scipy.ndimage
 import matplotlib.pyplot as plt
@@ -185,8 +188,93 @@ def conv_celebA_to_jax(df, img_dir):
         ds = {'image': images, 'label': labels, 'id': ids}
     else:
         ds = {'image': images, 'label': labels}
-    # return {k: jnp.array(v) for k, v in ds.items()}
-    return ds
+    return {k: jnp.array(v) for k, v in ds.items()}
+
+
+########################### Example 2: synthetic nonlinear dataset ###########################
+def dataset_reshape(dataset, buffer_size=20000):
+    dataset = dataset.map(
+              lambda a, b, c: (a,
+                               tf.tile(tf.reshape(b, [1]), [tf.shape(a)[0]]),
+                               tf.tile(tf.reshape(c, [1]), [tf.shape(a)[0]])))
+    dataset = dataset.shuffle(buffer_size=buffer_size)
+    dataset = dataset.flat_map(
+                lambda a, b, c: tf.data.Dataset.from_tensor_slices((a, b, c)))
+    return dataset
+
+
+def parse_function_simple(example_proto, n_input):
+    context_features = {
+            'num_cfs': tf.io.FixedLenFeature([], tf.int64),
+            'id': tf.io.FixedLenFeature([], tf.int64),
+            'label': tf.io.FixedLenFeature([], tf.int64)
+    }
+    sequence_features = {
+      'inputs': tf.io.FixedLenSequenceFeature([n_input], dtype=tf.float32, allow_missing=True)
+    }
+
+    context, parsed_features = tf.io.parse_single_sequence_example(
+        example_proto,
+        context_features=context_features,
+        sequence_features=sequence_features)
+
+    image = parsed_features["inputs"]
+    length = tf.cast(context["num_cfs"], tf.int32)
+    image = tf.reshape(image, [length, n_input])
+    return image, context["label"], context["id"]
+
+
+def matrix_dataset(directory, filenames, d_in, buffer_size=20000):
+    dataset = tf.data.TFRecordDataset(filenames)
+    dataset = dataset.map(lambda x: parse_function_simple(x, d_in))
+    return dataset_reshape(dataset, buffer_size)
+
+
+def train_synthetic(directory, filenames):
+    tfrecords_filename = 'synthetic_nonlinear_train.tfrecords'
+    raw = 'synthetic_nonlinear'
+    fname = os.path.join(directory, raw, tfrecords_filename)
+    ds = matrix_dataset(directory, filenames, 2)
+    return ds, fname
+
+
+def test1_synthetic(directory, filenames):
+    tfrecords_filename = 'synthetic_nonlinear_test1.tfrecords'
+    raw = 'synthetic_nonlinear'
+    fname = os.path.join(directory, raw, tfrecords_filename)
+    ds = matrix_dataset(directory, filenames, 2)
+    return ds, fname
+
+
+def test2_synthetic(directory, filenames):
+    tfrecords_filename = 'synthetic_nonlinear_test2.tfrecords'
+    raw = 'synthetic_nonlinear'
+    fname = os.path.join(directory, raw, tfrecords_filename)
+    ds = matrix_dataset(directory, filenames, 2)
+    return ds, fname
+
+def load_datasets_synthetic(directory='data'):
+    """Load synthetic nonlinear dataset."""
+    filenames_train = os.path.join(directory, 'synthetic_nonlinear', 'synthetic_nonlinear_train.tfrecords')
+    filenames_test1 = os.path.join(directory, 'synthetic_nonlinear', 'synthetic_nonlinear_test1.tfrecords')
+    filenames_test2 = os.path.join(directory, 'synthetic_nonlinear', 'synthetic_nonlinear_test2.tfrecords')
+
+    train_ds, _ = train_synthetic(directory, [filenames_train])
+    test1_ds, _ = test1_synthetic(directory, [filenames_test1])
+    test2_ds, _ = test2_synthetic(directory, [filenames_test2])
+
+    all_ds = []
+
+    for ds in [train_ds, test1_ds, test2_ds]:
+        features_list = []
+        labels = []
+        ids = []
+        for feats, label, id in ds:
+            features_list.append(feats.numpy()) 
+            labels.append(label.numpy())     
+            ids.append(id.numpy())       
+        all_ds.append({'image': np.array(features_list), 'label': np.array(labels), 'id': np.array(ids)})
+    return {k: jnp.array(v) for k, v in all_ds[0].items()},{k: jnp.array(v) for k, v in all_ds[1].items()}, {k: jnp.array(v) for k, v in all_ds[2].items()}
 
 
 ########################### Main function ###########################

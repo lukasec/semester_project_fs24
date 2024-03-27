@@ -24,6 +24,18 @@ logging.set_verbosity(logging.INFO)
 SEED = 7
 
 
+class MLP(nn.Module):
+    """Three-layer MLP as used for Example 2."""
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Dense(features=500)(x)
+        x = nn.softplus(x)
+        x = nn.Dense(features=500)(x)
+        x = nn.softplus(x)
+        x = nn.Dense(features=2)(x)
+        return x
+  
+
 class CNN_celebA(nn.Module):
     """Five-layer CNN as outlined in Table C.1."""
     @nn.compact
@@ -149,18 +161,29 @@ def train_epoch(state, train_ds, config, rng):
 def create_train_state(rng, learning_rate, decay_rate, decay_steps, model='mnist'):
     """Initialize weights and optimizer."""
     if model == 'mnist':
-        cnn = CNN_mnist()
-        params = cnn.init(rng, jnp.ones([1, 28, 28, 1]))['params']
+        net = CNN_mnist()
+        params = net.init(rng, jnp.ones([1, 28, 28, 1]))['params']
         schedule = optax.exponential_decay(init_value=learning_rate,
                                         transition_steps=decay_steps,
                                         decay_rate=decay_rate)
         tx = optax.adam(schedule)
 
     elif model == 'celebA':
-        cnn = CNN_celebA()
-        params = cnn.init(rng, jnp.ones([1, 64, 64, 3]))['params']
-        tx = optax.adam(learning_rate=learning_rate)
-    return train_state.TrainState.create(apply_fn=cnn.apply, params=params, tx=tx)
+        net = CNN_celebA()
+        params = net.init(rng, jnp.ones([1, 64, 64, 3]))['params']
+        schedule = optax.exponential_decay(init_value=learning_rate,
+                                        transition_steps=decay_steps,
+                                        decay_rate=decay_rate)
+        tx = optax.adam(schedule)
+
+    elif model == 'synthetic':
+        net = MLP()
+        params = net.init(rng, jnp.ones([1, 2]))['params']  
+        schedule = optax.exponential_decay(init_value=learning_rate,
+                                        transition_steps=decay_steps,
+                                        decay_rate=decay_rate)
+        tx = optax.adam(schedule)
+    return train_state.TrainState.create(apply_fn=net.apply, params=params, tx=tx)
 
 
 def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds: dict, test1_ds: dict, test2_ds: dict) -> train_state.TrainState:
@@ -183,20 +206,33 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
         misclassification_rate_test1 = 1 - test1_accuracy
         misclassification_rate_test2 = 1 - test2_accuracy
 
-        logging.info(
-            f'epoch: {epoch}, train_loss: {train_loss:.4f}, train_accuracy: {train_accuracy * 100:.2f}, '
-            f'test1_accuracy: {test1_accuracy * 100:.2f}, '
-            f'test2_accuracy: {test2_accuracy * 100:.2f}, '
-            f'core_penalty: {core_penalty:.4f}, '
-            f'with_without: {with_without:.4f}'
-        )
+        if config.model == 'celebA':
+            logging.info(
+                f'epoch: {epoch}, train_loss: {train_loss:.4f}, train_accuracy: {train_accuracy * 100:.2f}, '
+                f'test1_accuracy: {test1_accuracy * 100:.2f}, '
+                f'test2_accuracy: {test2_accuracy * 100:.2f}, '
+                f'core_penalty: {core_penalty:.4f}, '
+                f'with_without: {with_without:.4f}'  # impactful IDs for CoRe penalty
+            )
 
-        summary_writer.scalar('train_loss', train_loss, epoch)
-        summary_writer.scalar('train_accuracy', train_accuracy, epoch)
-        summary_writer.scalar('test_accuracy', test1_accuracy, epoch)
-        summary_writer.scalar('test_accuracy', test2_accuracy, epoch)
-        summary_writer.scalar('core_penalty', core_penalty, epoch)
-        summary_writer.scalar('with_without', with_without, epoch)
+            summary_writer.scalar('train_loss', train_loss, epoch)
+            summary_writer.scalar('train_accuracy', train_accuracy, epoch)
+            summary_writer.scalar('test_accuracy', test1_accuracy, epoch)
+            summary_writer.scalar('test_accuracy', test2_accuracy, epoch)
+            summary_writer.scalar('core_penalty', core_penalty, epoch)
+            summary_writer.scalar('with_without', with_without, epoch)
+        else:
+            logging.info(
+                f'epoch: {epoch}, train_loss: {train_loss:.4f}, train_accuracy: {train_accuracy * 100:.2f}, '
+                f'test1_accuracy: {test1_accuracy * 100:.2f}, '
+                f'test2_accuracy: {test2_accuracy * 100:.2f}, '
+                f'core_penalty: {core_penalty:.4f}'            )
+
+            summary_writer.scalar('train_loss', train_loss, epoch)
+            summary_writer.scalar('train_accuracy', train_accuracy, epoch)
+            summary_writer.scalar('test_accuracy', test1_accuracy, epoch)
+            summary_writer.scalar('test_accuracy', test2_accuracy, epoch)
+            summary_writer.scalar('core_penalty', core_penalty, epoch)
 
     base_dir = os.path.dirname(workdir)
     misclassification_rates_file = os.path.join(base_dir, 'misclass_rates_models.txt')
