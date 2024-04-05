@@ -12,12 +12,14 @@ import tensorflow as tf
 import numpy as np
 import scipy.ndimage
 import matplotlib.pyplot as plt
+import jax
 import jax.numpy as jnp
 import pandas as pd
 from skimage.transform import resize
 from skimage.io import imread
 SEED = 7
 np.random.seed(SEED)
+rng = jax.random.key(SEED)
 
 
 ########################### Experiment 5.5 MNIST with rotations ###########################
@@ -31,7 +33,6 @@ def load_original_mnist():
     # Normalize images
     train_ds['image'] = train_ds['image'] / 255.0
     test_ds['image'] = test_ds['image'] / 255.0
-    
     return train_ds, test_ds
 
 
@@ -55,7 +56,6 @@ def train_mnist(images, labels, c, bidirec):
     images_aug = np.concatenate((images_aug, rotated_images), axis=0)
     labels_aug = np.concatenate((labels_aug, [labels[i] for i in indices]), axis=0)
     ids_aug = np.concatenate((ids_aug, indices), axis=0)
-    
     return {'image': images_aug, 'label': labels_aug, 'id': ids_aug}
 
 
@@ -70,7 +70,6 @@ def test_mnist(images, bidirec):
             sign = np.random.choice([-1, 1]) 
         angle = np.random.uniform(35, 70)
         images_mod[i] = scipy.ndimage.rotate(images[i], sign * angle, reshape=False, mode='nearest')
-
     return images_mod
 
 
@@ -93,7 +92,6 @@ def load_datasets_mnist(train_size, aug_size, bidirec):
     train_ds = {k: jnp.array(v) for k, v in train_ds.items()}
     test_ds_mod = {k: jnp.array(v) for k, v in test_ds_mod.items()}
     test_ds = {k: jnp.array(v) for k, v in test_ds.items()}
-
     return train_ds_aug, test_ds_mod, test_ds
     
 
@@ -174,7 +172,6 @@ def load_and_preprocess_image(img_path, output_shape=(64, 64)):
 def conv_celebA_to_jax(df, img_dir):
     """Convert CelebA dataset to JAX format."""
     images = []
-
     for _, row in df.iterrows():
         img_id = row['image_id']
         img_path = os.path.join(img_dir, img_id)
@@ -277,11 +274,23 @@ def load_datasets_synthetic(directory='data'):
     return {k: jnp.array(v) for k, v in all_ds[0].items()},{k: jnp.array(v) for k, v in all_ds[1].items()}, {k: jnp.array(v) for k, v in all_ds[2].items()}
 
 
-########################### Main function ###########################
-def load_datasets(dataset, train_size, aug_size, bidirec=False):
+########################### Main data loading functions ###########################
+def load_datasets(dataset, train_size=0, aug_size=0, bidirec=False):
     if dataset == 'mnist':
         return load_datasets_mnist(train_size, aug_size, bidirec)
     elif dataset == 'celebA_confound':
         return load_datasets_celebA_counfound()
+    elif dataset == 'synthetic':
+        return load_datasets_synthetic()
     else: 
         raise ValueError('Dataset not supported yet.')
+    
+
+def split_train_validation(ds, prop=0.8):
+    """Split dataset into training and validation set."""
+    perms = jax.random.permutation(rng, len(ds['image']))
+    train_idx = perms[:int(prop * len(ds['image']))]
+    val_idx = perms[int(prop * len(ds['image'])):]
+    train_ds = {k: v[train_idx] for k, v in ds.items()}
+    val_ds = {k: v[val_idx] for k, v in ds.items()}
+    return train_ds, val_ds
