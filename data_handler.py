@@ -33,6 +33,7 @@ def load_original_mnist():
     # Normalize images
     train_ds['image'] = train_ds['image'] / 255.0
     test_ds['image'] = test_ds['image'] / 255.0
+
     return train_ds, test_ds
 
 
@@ -56,6 +57,7 @@ def train_mnist(images, labels, c, bidirec):
     images_aug = np.concatenate((images_aug, rotated_images), axis=0)
     labels_aug = np.concatenate((labels_aug, [labels[i] for i in indices]), axis=0)
     ids_aug = np.concatenate((ids_aug, indices), axis=0)
+
     return {'image': images_aug, 'label': labels_aug, 'id': ids_aug}
 
 
@@ -70,6 +72,7 @@ def test_mnist(images, bidirec):
             sign = np.random.choice([-1, 1]) 
         angle = np.random.uniform(35, 70)
         images_mod[i] = scipy.ndimage.rotate(images[i], sign * angle, reshape=False, mode='nearest')
+
     return images_mod
 
 
@@ -92,6 +95,7 @@ def load_datasets_mnist(train_size, aug_size, bidirec):
     train_ds = {k: jnp.array(v) for k, v in train_ds.items()}
     test_ds_mod = {k: jnp.array(v) for k, v in test_ds_mod.items()}
     test_ds = {k: jnp.array(v) for k, v in test_ds.items()}
+
     return train_ds_aug, test_ds_mod, test_ds
     
 
@@ -126,6 +130,7 @@ def load_original_celebA():
     train_ds = partition[partition['partition'] == 0].merge(identity, on='image_id').merge(attributes, on='image_id')
     validation_ds = partition[partition['partition'] == 1].merge(identity, on='image_id').merge(attributes, on='image_id')
     test_ds = partition[partition['partition'] == 2].merge(identity, on='image_id').merge(attributes, on='image_id')
+
     return train_ds, validation_ds, test_ds, img_dir
 
 
@@ -133,39 +138,46 @@ def load_datasets_celebA_counfound(prop_glasses, train_size, test_size):
     """Create training and test sets with confounding as specified in section 5.2."""
     train_ds, validation_ds, test_ds, img_dir = load_original_celebA()
     
-    # Combine all datasets and shuffle
-    all_ds = pd.concat([train_ds, validation_ds, test_ds])
-    all_ds = all_ds.sample(frac=1, random_state=SEED).reset_index(drop=True)  # Permute dataset
+    # Combine validation and test datasets
+    test_ds = pd.concat([validation_ds, test_ds])
 
+    # Train set
     # Craft subsets and sample from them
     n = train_size // 2  # Train: half men, half women
     m = int(n * prop_glasses)  # Train: nb of men with glasses, women without
-    t1 = test_size[0] // 2  # Test set 1: half men with glasses, half women without
-    t2 = test_size[1] // 2  # test set 2: vice versa
-    men_with_glasses = all_ds[(all_ds['Male'] == 1) & (all_ds['Eyeglasses'] == 1)].sample(n=m+t1 , random_state=SEED)
-    men_without_glasses = all_ds[(all_ds['Male'] == 1) & (all_ds['Eyeglasses'] == 0)].sample(n=n-m+t2, random_state=SEED)
-    women_with_glasses = all_ds[(all_ds['Male'] == 0) & (all_ds['Eyeglasses'] == 1)].sample(n=n-m+t2, random_state=SEED)
-    women_without_glasses = all_ds[(all_ds['Male'] == 0) & (all_ds['Eyeglasses'] == 0)].sample(n=m+t1, random_state=SEED)
+    men_with_glasses = train_ds[(train_ds['Male'] == 1) & (train_ds['Eyeglasses'] == 1)].sample(n=m, random_state=SEED)
+    men_without_glasses = train_ds[(train_ds['Male'] == 1) & (train_ds['Eyeglasses'] == 0)].sample(n=n-m, random_state=SEED)
+    women_with_glasses = train_ds[(train_ds['Male'] == 0) & (train_ds['Eyeglasses'] == 1)].sample(n=n-m, random_state=SEED)
+    women_without_glasses = train_ds[(train_ds['Male'] == 0) & (train_ds['Eyeglasses'] == 0)].sample(n=m, random_state=SEED)
 
     # Construct datasets with confounding
     # Training set: men mostly wearing glasses, women mostly not wearing glasses
     train_ds = pd.concat([men_with_glasses[:m], men_without_glasses[:n-m], women_with_glasses[:n-m], women_without_glasses[:m]])
     train_ds = train_ds.sample(frac=1, random_state=SEED).reset_index(drop=True)  
 
+    # Test sets
     # Test set 1: men only wear glasses, women all without glasses
-    test1_ds = pd.concat([men_with_glasses[m:m+t1], women_without_glasses[m:m+t1]])
+    t1 = test_size[0] // 2  # Test set 1: half men with glasses, half women without
+    test_men_with_glasses = test_ds[(test_ds['Male'] == 1) & (test_ds['Eyeglasses'] == 1)].sample(n=t1, random_state=SEED)
+    test_women_without_glasses = test_ds[(test_ds['Male'] == 0) & (test_ds['Eyeglasses'] == 0)].sample(n=t1, random_state=SEED)
+    test1_ds = pd.concat([test_men_with_glasses, test_women_without_glasses])
     test1_ds = test1_ds.sample(frac=1, random_state=SEED).reset_index(drop=True)
 
     # Test set 2: women only wear glasses, men all without glasses
-    test2_ds = pd.concat([men_without_glasses[n-m:n-m+t2], women_with_glasses[n-m:n-m+t2]])
+    t2 = test_size[1] // 2  # test set 2: vice versa
+    test_men_without_glasses = test_ds[(test_ds['Male'] == 1) & (test_ds['Eyeglasses'] == 0)].sample(n=t2, random_state=SEED)
+    test_women_with_glasses = test_ds[(test_ds['Male'] == 0) & (test_ds['Eyeglasses'] == 1)].sample(n=t2, random_state=SEED)
+    test2_ds = pd.concat([test_men_without_glasses, test_women_with_glasses])
     test2_ds = test2_ds.sample(frac=1, random_state=SEED).reset_index(drop=True)
+
     return train_ds, test1_ds, test2_ds, img_dir
-        
+
 
 def load_and_preprocess_image(img_path, output_shape=(64, 64)):
     """Load an image and resize it to desired output shape."""
     img = imread(img_path)
     img_resized = resize(img, output_shape, anti_aliasing=True)
+
     return img_resized
 
 
@@ -185,6 +197,7 @@ def conv_celebA_to_jax(df, img_dir):
         ds = {'image': images, 'label': labels, 'id': ids}
     else:
         ds = {'image': images, 'label': labels}
+
     return {k: jnp.array(v) for k, v in ds.items()}
 
 
@@ -194,9 +207,10 @@ def dataset_reshape(dataset, buffer_size=20000):
               lambda a, b, c: (a,
                                tf.tile(tf.reshape(b, [1]), [tf.shape(a)[0]]),
                                tf.tile(tf.reshape(c, [1]), [tf.shape(a)[0]])))
-    dataset = dataset.shuffle(buffer_size=buffer_size)
+    dataset = dataset.shuffle(buffer_size=buffer_size, seed=SEED)
     dataset = dataset.flat_map(
                 lambda a, b, c: tf.data.Dataset.from_tensor_slices((a, b, c)))
+    
     return dataset
 
 
@@ -218,12 +232,14 @@ def parse_function_simple(example_proto, n_input):
     image = parsed_features["inputs"]
     length = tf.cast(context["num_cfs"], tf.int32)
     image = tf.reshape(image, [length, n_input])
+
     return image, context["label"], context["id"]
 
 
 def matrix_dataset(directory, filenames, d_in, buffer_size=20000):
     dataset = tf.data.TFRecordDataset(filenames)
     dataset = dataset.map(lambda x: parse_function_simple(x, d_in))
+
     return dataset_reshape(dataset, buffer_size)
 
 
@@ -232,6 +248,7 @@ def train_synthetic(directory, filenames):
     raw = 'synthetic_nonlinear'
     fname = os.path.join(directory, raw, tfrecords_filename)
     ds = matrix_dataset(directory, filenames, 2)
+
     return ds, fname
 
 
@@ -240,6 +257,7 @@ def test1_synthetic(directory, filenames):
     raw = 'synthetic_nonlinear'
     fname = os.path.join(directory, raw, tfrecords_filename)
     ds = matrix_dataset(directory, filenames, 2)
+
     return ds, fname
 
 
@@ -248,6 +266,7 @@ def test2_synthetic(directory, filenames):
     raw = 'synthetic_nonlinear'
     fname = os.path.join(directory, raw, tfrecords_filename)
     ds = matrix_dataset(directory, filenames, 2)
+
     return ds, fname
 
 def load_datasets_synthetic(directory='data'):
@@ -271,6 +290,7 @@ def load_datasets_synthetic(directory='data'):
             labels.append(label.numpy())     
             ids.append(id.numpy())       
         all_ds.append({'image': np.array(features_list), 'label': np.array(labels), 'id': np.array(ids)})
+
     return {k: jnp.array(v) for k, v in all_ds[0].items()},{k: jnp.array(v) for k, v in all_ds[1].items()}, {k: jnp.array(v) for k, v in all_ds[2].items()}
 
 
@@ -293,4 +313,5 @@ def split_train_validation(ds, prop=0.8):
     val_idx = perms[int(prop * len(ds['image'])):]
     train_ds = {k: v[train_idx] for k, v in ds.items()}
     val_ds = {k: v[val_idx] for k, v in ds.items()}
+    
     return train_ds, val_ds
