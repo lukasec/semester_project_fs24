@@ -2,12 +2,12 @@
 Author: Luka Secilmis
 
 Description:
-    Implements Conditional Variance Regularization (CoRe) on augmented MNIST dataset.
+    Implements Conditional Variance Regularization (CoRe) for classification.
 
 References:
-    Reproduces experiment in section 5.5 of https://arxiv.org/abs/1710.11469 (C.Heinze-Deml and N. Meinshausen, 2017)
+    Used to reproduce experiments of https://arxiv.org/abs/1710.11469 (C.Heinze-Deml and N. Meinshausen, 2017)
     Model architecture and hyperparameters adapted from https://github.com/christinaheinze/core/tree/master
-    Adapted MNIST classification example from https://github.com/google/flax
+    General Flax training procedure adapted from MNIST classification example in https://github.com/google/flax
 """
 import os
 from absl import logging
@@ -28,7 +28,10 @@ SEED = 7
 def apply_model(state, images, labels, ids, num_classes, lambda_l2, lambda_core, cfl_anneal):
     """Computes gradients, loss and accuracy for a single batch."""
     def core_penalty(params, logits, ids):
-        _, index_inverse, counts = jnp.unique(ids, return_inverse=True, return_counts=True)
+        # Note: for our classification experiments, it suffices to condition on ID (as Y is always the same for a given an ID)
+        # if we wish to condition on ID, Y we must create a composite key (ID, Y)
+        key = ids
+        _, index_inverse, counts = jnp.unique(key, return_inverse=True, return_counts=True)
         mask = counts[index_inverse] > 1
         penalty = 0.0
         
@@ -57,10 +60,10 @@ def apply_model(state, images, labels, ids, num_classes, lambda_l2, lambda_core,
         logits = state.apply_fn({'params': params}, images)  # forward pass
         one_hot = jax.nn.one_hot(labels, num_classes)
         loss = jnp.mean(optax.softmax_cross_entropy(logits=logits, labels=one_hot))
-        l2_pen = l2_penalty(params)
-        loss += lambda_l2 * l2_pen
-        core_pen = core_penalty(params, logits, ids)
-        loss += cfl_anneal * lambda_core * core_pen
+        l2_pen = l2_penalty(params)  # Ridge penalty
+        loss += lambda_l2 * l2_pen  
+        core_pen = core_penalty(params, logits, ids)  # CoRe penalty
+        loss += cfl_anneal * lambda_core * core_pen  # potentially annealed
         return loss, (logits, core_pen)
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)  # auxiliary data
@@ -100,7 +103,7 @@ def train_epoch(state, train_ds, config, rng, cfl_anneal):
         epoch_accuracy.append(accuracy)
         core_penalties.append(core_pen)
 
-        # count number of batch IDs that occur more than once
+        # count number of batch IDs that occur more than once (contributing to CoRe penalty)
         count_id = jnp.bincount(batch_ids)
         count_id = count_id[count_id > 1]
         ids_more_than_once.append(jnp.sum(count_id))
@@ -133,12 +136,19 @@ def create_train_state(rng, config):
                                             transition_steps=config.decay_steps,
                                             decay_rate=config.decay_rate)
 
-    elif config.schedule == 'warmup_decay':
+    elif config.schedule == 'warmup_cosine_decay':
         schedule = optax.warmup_cosine_decay_schedule(init_value=0.0,
                                                         peak_value=config.learning_rate,
                                                         warmup_steps=config.warmup_steps,
                                                         decay_steps=config.decay_steps,
                                                         end_value=config.end_learning_rate) 
+    
+    elif config.schedule == 'warmup_exp_decay':
+        schedule = optax.warmup_exponential_decay_schedule(init_value=0.0,
+                                                           peak_value=config.learning_rate,
+                                                           warmup_steps=config.warmup_steps,
+                                                           transition_steps=config.decay_steps,
+                                                           decay_rate=config.decay_rate)
     
     else: schedule = config.learning_rate  # constant lr
     tx = optax.adam(schedule)    
@@ -162,6 +172,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
 
     # Seat up annealing of CoRe penalty
     if config.cfl_anneal: cfl_anneal, cfl_rise = 0.0, 1.0 / ((1 - config.no_cfl_frac) * config.num_epochs)
+    elif config.no_cfl_frac is not None: cfl_anneal, cfl_rise = 0.0, 0.0
     else: cfl_anneal, cfl_rise = 1.0, 0.0
 
     for epoch in range(1, config.num_epochs + 1):
@@ -191,7 +202,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
             f'test2_accuracy: {test2_accuracy * 100:.2f}, '
             f'core_penalty: {core_penalty:.4f}, '
             f'val_loss: {val_loss_str}, '
-            f'ids_more_than_once: {ids_more_than_once:.2f}'
+            f'ids_more_than_once: {ids_more_than_once:.2f}' 
             )
 
         summary_writer.scalar('train_loss', train_loss, epoch)
@@ -205,9 +216,11 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
             logging.info(f'Met early stopping criteria, breaking at epoch {epoch}.')
             break
 
-        if config.cfl_anneal and epoch > int(config.no_cfl_frac * config.num_epochs): 
-            cfl_anneal += cfl_rise
-
+        if config.cfl_anneal:  # core penalty annealing
+            if epoch > int(config.no_cfl_frac * config.num_epochs): cfl_anneal += cfl_rise
+        elif config.no_cfl_frac is not None:  # no annealing, but only use CoRe penalty after a certain fraction of epochs
+            if epoch >= int(config.no_cfl_frac * config.num_epochs): cfl_anneal = 1.0
+        
     base_dir = os.path.dirname(workdir)
     misclassification_rates_file = os.path.join(base_dir, 'misclassif_rates.txt')
     os.makedirs(base_dir, exist_ok=True)
