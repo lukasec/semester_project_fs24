@@ -196,6 +196,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
         misclassification_rate_test1 = 1 - test1_accuracy
         misclassification_rate_test2 = 1 - test2_accuracy
 
+        # Log results
         logging.info(
             f'epoch: {epoch}, train_loss: {train_loss:.4f}, train_accuracy: {train_accuracy * 100:.2f}, '
             f'test1_accuracy: {test1_accuracy * 100:.2f}, '
@@ -212,15 +213,18 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
         summary_writer.scalar('core_penalty', core_penalty, epoch)
         summary_writer.scalar('val_loss', val_loss, epoch)
 
+        # Early stopping
         if config.with_earlystop and early_stop.should_stop:
             logging.info(f'Met early stopping criteria, breaking at epoch {epoch}.')
             break
 
+        # Anneal CoRe penalty
         if config.cfl_anneal:  # core penalty annealing
             if epoch > int(config.no_cfl_frac * config.num_epochs): cfl_anneal += cfl_rise
         elif config.no_cfl_frac is not None:  # no annealing, but only use CoRe penalty after a certain fraction of epochs
             if epoch >= int(config.no_cfl_frac * config.num_epochs): cfl_anneal = 1.0
-        
+    
+    # Save
     base_dir = os.path.dirname(workdir)
     misclassification_rates_file = os.path.join(base_dir, 'misclassif_rates.txt')
     os.makedirs(base_dir, exist_ok=True)
