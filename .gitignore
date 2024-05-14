@@ -11,3 +11,6 @@ config.env
 
 # Ignore all files in data directory
 data/*
+
+# Ignore all files in __pycache__ directory
+__pycache__/*
