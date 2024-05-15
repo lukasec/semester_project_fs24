@@ -1,9 +1,8 @@
 import os
 from typing import Sequence
-import numpy as np
-import pandas as pd
 import jax
 import jax.numpy as jnp
+import numpy as np
 import flax.linen as nn
 from flax.training import train_state
 import optax
@@ -19,41 +18,55 @@ class CNNEncoder(nn.Module):
     """Convolutional Encoder."""
     @nn.compact
     def __call__(self, x):
-        x = nn.Conv(features=16, kernel_size=(5, 5), strides=(2, 2))(x)
-        x = nn.leaky_relu(x, negative_slope=0.001)
-        x = nn.Conv(features=32, kernel_size=(5, 5), strides=(2, 2))(x)
-        x = nn.leaky_relu(x, negative_slope=0.001)
-        x = nn.Conv(features=64, kernel_size=(5, 5), strides=(2, 2))(x)
-        x = nn.leaky_relu(x, negative_slope=0.001)
-        x = nn.Conv(features=128, kernel_size=(5, 5), strides=(2, 2))(x)
-        x = nn.leaky_relu(x, negative_slope=0.001)
-        z = x.reshape((x.shape[0], -1))  # Flatten output
+        x = nn.Conv(features=32, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+        
+        x = nn.Conv(features=64, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x = nn.Conv(features=128, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x = nn.Conv(features=256, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x = nn.Conv(features=512, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        # Flatten to match the size of (batch_size, 512 * 2 * 2)
+        x = x.reshape((x.shape[0], -1))
+        z = nn.Dense(features=1000)(x)
         return z
 
 
 class CNNDecoder(nn.Module):
     """Convolutional Decoder."""
-    output_shape: Sequence[int]
     @nn.compact
     def __call__(self, z):
-        z = z.reshape((z.shape[0], 4, 4, 128))  # Reshape input for ConvTranspose
-        z = nn.ConvTranspose(features=64, kernel_size=(5, 5), strides=(2, 2))(z)
-        z = nn.leaky_relu(z, negative_slope=0.001)
-        z = nn.ConvTranspose(features=32, kernel_size=(5, 5), strides=(2, 2))(z)
-        z = nn.leaky_relu(z, negative_slope=0.001)
-        z = nn.ConvTranspose(features=16, kernel_size=(5, 5), strides=(2, 2))(z)
-        z = nn.leaky_relu(z, negative_slope=0.001)
-        z = nn.ConvTranspose(features=3, kernel_size=(5, 5), strides=(2, 2))(z) 
-        x_hat = nn.sigmoid(z)
+        x = nn.Dense(features=512 * 2 * 2)(z)
+        x = x.reshape((x.shape[0], 2, 2, 512))  # Start reconstructing from the smallest spatial dimension
+
+        x = nn.ConvTranspose(features=256, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x = nn.ConvTranspose(features=128, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x = nn.ConvTranspose(features=64, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x = nn.ConvTranspose(features=32, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x_hat = nn.ConvTranspose(features=3, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x_hat = nn.sigmoid(x_hat)
         return x_hat
     
 
 class HybridAutoEncoder(nn.Module):
-    input_shape: Sequence[int]
-
     def setup(self):
         self.encoder = CNNEncoder()
-        self.decoder = CNNDecoder(output_shape=self.input_shape)
+        self.decoder = CNNDecoder()
         self.classifier = nn.Dense(features=1)
 
     def __call__(self, x):
@@ -62,7 +75,14 @@ class HybridAutoEncoder(nn.Module):
         logits = self.classifier(z)
         return x_hat, logits
     
+    def encode(self, x):
+        return self.encoder(x)
 
+    def decode(self, z):
+        return self.decoder(z)
+    
+
+@jax.jit
 def apply_model(state, images, labels, lambda_aux):
     def loss_fn(params):
         x_hat, logits_aux = state.apply_fn({'params': params}, images)
@@ -119,7 +139,7 @@ def train_epoch(state, train_ds, config, rng, lambda_aux):
 
 def create_train_state(rng, config):
     """Initialize weights and optimizer."""
-    model = HybridAutoEncoder(input_shape=config.input_shape)
+    model = HybridAutoEncoder()
     params = model.init(rng, jnp.ones([1, 64, 64, 3]))['params']
     tx = optax.adam(learning_rate=config.learning_rate)
     return train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
