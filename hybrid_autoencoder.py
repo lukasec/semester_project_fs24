@@ -18,22 +18,21 @@ class CNNEncoder(nn.Module):
     """Convolutional Encoder."""
     @nn.compact
     def __call__(self, x):
-        x = nn.Conv(features=32, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.Conv(features=32, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
         
-        x = nn.Conv(features=64, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.Conv(features=64, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
 
-        x = nn.Conv(features=128, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.Conv(features=128, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
 
-        x = nn.Conv(features=256, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.Conv(features=256, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
 
-        x = nn.Conv(features=512, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.Conv(features=512, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
 
-        # Flatten to match the size of (batch_size, 512 * 2 * 2)
         x = x.reshape((x.shape[0], -1))
         z = nn.Dense(features=1000)(x)
         return z
@@ -44,21 +43,21 @@ class CNNDecoder(nn.Module):
     @nn.compact
     def __call__(self, z):
         x = nn.Dense(features=512 * 2 * 2)(z)
-        x = x.reshape((x.shape[0], 2, 2, 512))  # Start reconstructing from the smallest spatial dimension
+        x = x.reshape((x.shape[0], 2, 2, 512))
 
-        x = nn.ConvTranspose(features=256, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.ConvTranspose(features=256, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
 
-        x = nn.ConvTranspose(features=128, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.ConvTranspose(features=128, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
 
-        x = nn.ConvTranspose(features=64, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.ConvTranspose(features=64, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
 
-        x = nn.ConvTranspose(features=32, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x = nn.ConvTranspose(features=32, kernel_size=(4, 4), strides=(2, 2))(x)
         x = nn.relu(x)
 
-        x_hat = nn.ConvTranspose(features=3, kernel_size=(4, 4), strides=(2, 2), padding='SAME')(x)
+        x_hat = nn.ConvTranspose(features=3, kernel_size=(4, 4), strides=(2, 2))(x)
         x_hat = nn.sigmoid(x_hat)
         return x_hat
     
