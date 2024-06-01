@@ -3,11 +3,6 @@ Author: Luka Secilmis
 
 Description:
     Implements Conditional Variance Regularization (CoRe) for classification.
-
-References:
-    Used to reproduce experiments of https://arxiv.org/abs/1710.11469 (C.Heinze-Deml and N. Meinshausen, 2017)
-    Model architecture and hyperparameters adapted from https://github.com/christinaheinze/core/tree/master
-    General Flax training procedure adapted from MNIST classification example in https://github.com/google/flax
 """
 import os
 from absl import logging
@@ -21,6 +16,7 @@ import numpy as np
 import optax
 import data_handler
 import architectures
+import hybrid_autoencoder
 logging.set_verbosity(logging.INFO)
 SEED = 7
 
@@ -29,7 +25,7 @@ def apply_model(state, images, labels, ids, num_classes, lambda_l2, lambda_core,
     """Computes gradients, loss and accuracy for a single batch."""
     def core_penalty(params, logits, ids):
         # Note: for our classification experiments, it suffices to condition on ID (as Y is always the same for a given an ID)
-        # if we wish to condition on ID, Y we must create a composite key (ID, Y)
+        # if we wish to condition on (ID, Y) we simply create a composite key ID := (ID,Y) when processing datasets
         key = ids
         _, index_inverse, counts = jnp.unique(key, return_inverse=True, return_counts=True)
         mask = counts[index_inverse] > 1
@@ -72,6 +68,49 @@ def apply_model(state, images, labels, ids, num_classes, lambda_l2, lambda_core,
     return grads, loss, accuracy, core_pen
 
 
+def apply_regression_model(state, images, labels, ids, lambda_l2, lambda_core, cfl_anneal):
+    """Regression: computes gradients, loss and RMSE for a single batch."""
+    def core_penalty(params, logits, ids):
+        key = ids
+        _, index_inverse, counts = jnp.unique(key, return_inverse=True, return_counts=True)
+        mask = counts[index_inverse] > 1
+        penalty = 0.0
+        
+        if jnp.any(mask):
+            # IDs with more than one occurence
+            filtered_logits = logits[mask] 
+            
+            # Mean logits per ID
+            sum_perID = jax.ops.segment_sum(filtered_logits, index_inverse[mask], num_segments=jnp.max(index_inverse) + 1)
+            count_perID = jax.ops.segment_sum(jnp.ones_like(filtered_logits[:, 0]), index_inverse[mask], num_segments=jnp.max(index_inverse) + 1)
+            mean_perID = sum_perID / count_perID[:, None]
+            
+            # Variance per ID
+            square_diff = (filtered_logits - mean_perID[index_inverse[mask]])**2
+            sum_squares_perID = jax.ops.segment_sum(square_diff, index_inverse[mask], num_segments=jnp.max(index_inverse) + 1)
+            variance_perID = sum_squares_perID / count_perID[:, None]
+            
+            # Mean variance
+            penalty = jnp.mean(variance_perID[count_perID > 1])
+        return penalty
+        
+    def l2_penalty(params):
+        return sum(jnp.sum(jnp.square(param)) for param in jax.tree_util.tree_leaves(params))
+ 
+    def loss_fn(params):
+        predictions = state.apply_fn({'params': params}, images)  # forward pass
+        loss = jnp.mean((predictions - labels)**2)  # MSE 
+        l2_pen = l2_penalty(params)  # Ridge penalty
+        loss += lambda_l2 * l2_pen  
+        core_pen = core_penalty(params, predictions, ids)  # CoRe penalty
+        loss += cfl_anneal * lambda_core * core_pen  # potentially annealed
+        return loss, (predictions, core_pen)
+
+    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)  # auxiliary data
+    (loss, (_, core_pen)), grads = grad_fn(state.params)
+    return grads, loss, core_pen
+
+
 @jax.jit
 def update_model(state, grads):
     return state.apply_gradients(grads=grads)
@@ -97,7 +136,12 @@ def train_epoch(state, train_ds, config, rng, cfl_anneal):
         batch_labels = train_ds['label'][perm, ...]
         batch_ids = train_ds['id'][perm, ...]
 
-        grads, loss, accuracy, core_pen = apply_model(state, batch_images, batch_labels, batch_ids, config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
+        if config.model != 'regression':
+            grads, loss, accuracy, core_pen = apply_model(state, batch_images, batch_labels, batch_ids, config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
+        else:
+            grads, loss, core_pen = apply_regression_model(state, batch_images, batch_labels, batch_ids, config.lambda_l2, config.lambda_core, cfl_anneal)
+            accuracy = 0  # not needed for regression
+        
         state = update_model(state, grads)
         epoch_loss.append(loss)
         epoch_accuracy.append(accuracy)
@@ -129,6 +173,10 @@ def create_train_state(rng, config):
     elif config.model == 'synthetic':
         model = architectures.MLP()
         params = model.init(rng, jnp.ones([1, 2]))['params']  
+    
+    elif config.model == 'regression':
+        model = hybrid_autoencoder.CNNEncoder()
+        params = model.init(rng, jnp.ones([1, 64, 64, 3]))['params']
 
     # Optimizer
     if config.schedule == 'exp_decay':
@@ -188,30 +236,42 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
         # Early stopping
         if config.with_earlystop: early_stop = early_stop.update(val_loss)
 
-        # Evaluate on test sets
-        _, _, test1_accuracy, _ = apply_model(state, test1_ds['image'], test1_ds['label'], jnp.arange(len(test1_ds['image'])), config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
-        _, _, test2_accuracy, _ = apply_model(state, test2_ds['image'], test2_ds['label'], jnp.arange(len(test2_ds['image'])), config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
+        # Evaluate on test sets & Llog results
+        if config.model != 'regression':  # classification
+            _, test1_loss, test1_accuracy, _ = apply_model(state, test1_ds['image'], test1_ds['label'], jnp.arange(len(test1_ds['image'])), config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
+            _, test2_loss, test2_accuracy, _ = apply_model(state, test2_ds['image'], test2_ds['label'], jnp.arange(len(test2_ds['image'])), config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
 
-        # Calculate misclassification rates for the last epoch directly
-        misclassification_rate_test1 = 1 - test1_accuracy
-        misclassification_rate_test2 = 1 - test2_accuracy
+            logging.info(
+                f'epoch: {epoch}, train_loss: {train_loss:.4f}, train_accuracy: {train_accuracy * 100:.2f}, '
+                f'test1_accuracy: {test1_accuracy * 100:.2f}, '
+                f'test2_accuracy: {test2_accuracy * 100:.2f}, '
+                f'core_penalty: {core_penalty:.4f}, '
+                f'val_loss: {val_loss_str}, '
+                f'ids_more_than_once: {ids_more_than_once:.2f}' 
+                )
+            summary_writer.scalar('train_loss', train_loss, epoch)
+            summary_writer.scalar('train_accuracy', train_accuracy, epoch)
+            summary_writer.scalar('test1_accuracy', test1_accuracy, epoch)
+            summary_writer.scalar('test2_accuracy', test2_accuracy, epoch)
+            summary_writer.scalar('core_penalty', core_penalty, epoch)
+            summary_writer.scalar('val_loss', val_loss, epoch)
+        else:  # regression
+            _, test1_loss, _ = apply_regression_model(state, test1_ds['image'], test1_ds['label'], jnp.arange(len(test1_ds['image'])), config.lambda_l2, config.lambda_core, cfl_anneal)
+            _, test2_loss, _ = apply_regression_model(state, test2_ds['image'], test2_ds['label'], jnp.arange(len(test2_ds['image'])), config.lambda_l2, config.lambda_core, cfl_anneal)
 
-        # Log results
-        logging.info(
-            f'epoch: {epoch}, train_loss: {train_loss:.4f}, train_accuracy: {train_accuracy * 100:.2f}, '
-            f'test1_accuracy: {test1_accuracy * 100:.2f}, '
-            f'test2_accuracy: {test2_accuracy * 100:.2f}, '
-            f'core_penalty: {core_penalty:.4f}, '
-            f'val_loss: {val_loss_str}, '
-            f'ids_more_than_once: {ids_more_than_once:.2f}' 
+            logging.info(
+                f'epoch: {epoch}, train_loss: {train_loss:.4f}, '
+                f'test1_loss: {test1_loss:.4f}, '
+                f'test2_loss: {test2_loss:.4f}, '
+                f'core_penalty: {core_penalty:.4f}, '
+                f'val_loss: {val_loss_str}, '
+                f'ids_more_than_once: {ids_more_than_once:.2f}'
             )
-
-        summary_writer.scalar('train_loss', train_loss, epoch)
-        summary_writer.scalar('train_accuracy', train_accuracy, epoch)
-        summary_writer.scalar('test_accuracy', test1_accuracy, epoch)
-        summary_writer.scalar('test_accuracy', test2_accuracy, epoch)
-        summary_writer.scalar('core_penalty', core_penalty, epoch)
-        summary_writer.scalar('val_loss', val_loss, epoch)
+            summary_writer.scalar('train_loss', train_loss, epoch)
+            summary_writer.scalar('test1_MSE', test1_loss, epoch)
+            summary_writer.scalar('test2_MSE', test2_loss, epoch)
+            summary_writer.scalar('core_penalty', core_penalty, epoch)
+            summary_writer.scalar('val_loss', val_loss, epoch)
 
         # Early stopping
         if config.with_earlystop and early_stop.should_stop:
@@ -224,14 +284,5 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
         elif config.no_cfl_frac is not None:  # no annealing, but only use CoRe penalty after a certain fraction of epochs
             if epoch >= int(config.no_cfl_frac * config.num_epochs): cfl_anneal = 1.0
     
-    # Save
-    base_dir = os.path.dirname(workdir)
-    misclassification_rates_file = os.path.join(base_dir, 'misclassif_rates.txt')
-    os.makedirs(base_dir, exist_ok=True)
-
-    with open(misclassification_rates_file, 'a') as f:
-        model_name = os.path.basename(workdir)
-        f.write(f'Model: {model_name}, Test1 Misclassification Rate: {misclassification_rate_test1:.4f}, Test2 Misclassification Rate: {misclassification_rate_test2:.4f}\n')
-
     summary_writer.flush()
     return state

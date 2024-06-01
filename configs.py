@@ -111,12 +111,17 @@ def synthetic_experiment():
     return config
 
 
-def hybrid_AE():
+def autoencoder_contrastive():
     config = ml_collections.ConfigDict()
 
-    config.lambda_aux = 0.1
     config.batch_size = 256
     config.input_shape = (64, 64, 1)
     config.learning_rate = 1e-3
-    config.num_epochs = 50
+    config.num_epochs = 20
+
+    config.lambda_reconstruction = 1.0
+    config.lambda_gender = 1.0
+    config.lambda_id = 1.0
+    config.margin = 1.0
+
     return config
