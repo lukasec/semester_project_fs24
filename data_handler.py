@@ -202,6 +202,7 @@ def conv_celebA_to_jax(df, img_dir):
 
 
 ########################### Example 2: synthetic nonlinear dataset ###########################
+# Download manually from https://github.com/christinaheinze/core/tree/master and place in data/synthetic_nonlinear
 def dataset_reshape(dataset, buffer_size=20000):
     dataset = dataset.map(
               lambda a, b, c: (a,
