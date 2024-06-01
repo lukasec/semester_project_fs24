@@ -1,5 +1,4 @@
-# Semester project
-## Domain shift robustness in deep learning
+# Semester project: domain shift robustness in deep learning
 ## ETH Zurich - Swiss Data Science Center
 ### Supervised by Dr. Simon Dirmeier and Prof. Dr. Fernando Perez-Cruz. 
 This repository implements and studies conditional variance regularization (CoRe) by C. Heinze-Deml and N. Meinshausen (2017). <br>
