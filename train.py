@@ -2,7 +2,7 @@
 Author: Luka Secilmis
 
 Description:
-    Implements Conditional Variance Regularization (CoRe) for classification.
+    Implements Conditional Variance Regularization (CoRe).
 """
 import os
 from absl import logging
