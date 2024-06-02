@@ -136,11 +136,11 @@ def train_epoch(state, train_ds, config, rng, cfl_anneal):
         batch_labels = train_ds['label'][perm, ...]
         batch_ids = train_ds['id'][perm, ...]
 
-        if config.model != 'regression':
-            grads, loss, accuracy, core_pen = apply_model(state, batch_images, batch_labels, batch_ids, config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
-        else:
+        if config.model == 'regression' or config.model == 'regression_PCA':
             grads, loss, core_pen = apply_regression_model(state, batch_images, batch_labels, batch_ids, config.lambda_l2, config.lambda_core, cfl_anneal)
             accuracy = 0  # not needed for regression
+        else:  # classification
+            grads, loss, accuracy, core_pen = apply_model(state, batch_images, batch_labels, batch_ids, config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
         
         state = update_model(state, grads)
         epoch_loss.append(loss)
@@ -166,7 +166,7 @@ def create_train_state(rng, config):
         model = architectures.CNN_mnist()
         params = model.init(rng, jnp.ones([1, 28, 28, 1]))['params']
 
-    elif config.model == 'celebA':
+    elif config.model == 'celebA' or config.model == 'regression_PCA':
         model = architectures.CNN_celebA()
         params = model.init(rng, jnp.ones([1, 64, 64, 3]))['params']
 
@@ -177,7 +177,7 @@ def create_train_state(rng, config):
     elif config.model == 'regression':
         model = hybrid_autoencoder.CNNEncoder()
         params = model.init(rng, jnp.ones([1, 64, 64, 3]))['params']
-
+    
     # Optimizer
     if config.schedule == 'exp_decay':
         schedule = optax.exponential_decay(init_value=config.learning_rate,
@@ -237,7 +237,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str, train_ds
         if config.with_earlystop: early_stop = early_stop.update(val_loss)
 
         # Evaluate on test sets & Llog results
-        if config.model != 'regression':  # classification
+        if config.model != 'regression' and config.model != 'regression_PCA':  # classification
             _, test1_loss, test1_accuracy, _ = apply_model(state, test1_ds['image'], test1_ds['label'], jnp.arange(len(test1_ds['image'])), config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
             _, test2_loss, test2_accuracy, _ = apply_model(state, test2_ds['image'], test2_ds['label'], jnp.arange(len(test2_ds['image'])), config.num_classes, config.lambda_l2, config.lambda_core, cfl_anneal)
 
